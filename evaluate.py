@@ -70,6 +70,17 @@ EVAL_SET = [
             "transformer architectures, system design, and interview preparation."
         ),
     },
+    {
+        "question": "What is week 16 of the roadmap focused on?",
+        "ground_truth": (
+            "Week 16 is focused on mock interviews, a final review of the material, and "
+            "starting job applications -- retrieval practice under time pressure."
+        ),
+    },
+    {
+        "question": "How does the book suggest framing a churn-reduction business goal as a machine learning problem?",
+        "ground_truth": "As a probability-prediction task: predicting the probability that a customer will churn.",
+    },
 ]
 
 
@@ -78,7 +89,10 @@ def build_eval_dataset(chain: RagChain) -> Dataset:
     for item in EVAL_SET:
         question = item["question"]
         chunks = chain.retrieve(question)
-        answer = chain.generate(question, chunks, history=[]) if chunks else "No relevant documents found."
+        if chunks:
+            answer = chain.generate(question, chunks, history=[])
+        else:
+            answer = "I don't have information on that in the ingested documents."
 
         rows["user_input"].append(question)
         rows["response"].append(answer)

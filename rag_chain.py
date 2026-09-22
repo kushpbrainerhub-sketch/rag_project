@@ -20,10 +20,25 @@ GROQ_MODEL = "openai/gpt-oss-120b"
 RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 TOP_K = 4
 RRF_K = 60  # reciprocal rank fusion constant
+RERANK_MARGIN = 5.0  # keep chunks scoring within this many points of the top rerank score
+GENERATION_TEMPERATURE = 0.2
+
+# Vector search always returns its k nearest neighbors, even for a query totally unrelated
+# to the corpus ("hii") -- there's no built-in concept of "no good match." Chroma's distance
+# here is squared L2 (unbounded, not 0-1), and its scale is corpus-specific. Calibrated
+# empirically on this project's data: on-topic queries (even vague ones like "what is this
+# document about?") landed a best distance of 0.94-1.27; greetings/small talk ("hii",
+# "good morning", "tell me a joke") landed 1.41-1.63. 1.35 sits in that gap. Re-calibrate
+# this if you swap in a different embedding model or a very different document set.
+MAX_DISTANCE = 1.35
 
 SYSTEM_PROMPT = (
     "You are a helpful assistant that answers questions using only the provided context. "
-    "If the context does not contain the answer, say you don't know. "
+    "Answer the question directly in the first sentence, then add only supporting detail "
+    "the question actually calls for -- do not pad with tangential context. "
+    "If the context does not contain the answer, or the question is unrelated to the context "
+    "(e.g. a greeting or small talk), say you don't have information on that instead of "
+    "summarizing the context anyway. "
     "Cite sources inline like [source, p.N] (omit the page if none is given)."
 )
 
@@ -31,13 +46,19 @@ HISTORY_TURNS = 6  # messages (3 user/assistant pairs) kept for conversational c
 
 
 class RagChain:
-    def __init__(self, top_k: int = TOP_K, groq_model: str = GROQ_MODEL):
+    def __init__(
+        self,
+        top_k: int = TOP_K,
+        groq_model: str = GROQ_MODEL,
+        max_distance: float = MAX_DISTANCE,
+    ):
         api_key = os.environ.get("GROQ_API_KEY")
         if not api_key:
             raise RuntimeError("GROQ_API_KEY not set in environment or .env")
 
         self.top_k = top_k
         self.groq_model = groq_model
+        self.max_distance = max_distance
         self.embedder = SentenceTransformer(EMBEDDING_MODEL)
         self.reranker = CrossEncoder(RERANK_MODEL)
         self.client = chromadb.PersistentClient(path=CHROMA_DIR)
@@ -110,6 +131,14 @@ class RagChain:
     def retrieve(self, query: str) -> list[dict]:
         pool = max(20, self.top_k * 4)
         vector_hits = self._vector_search(query, pool)
+
+        # Relevance gate: if even the closest chunk is farther than max_distance, the query
+        # isn't actually about this corpus (a greeting, small talk, an unrelated topic) --
+        # bail out before wasting a rerank pass or handing the LLM unrelated context it would
+        # otherwise dutifully summarize.
+        if not vector_hits or vector_hits[0]["distance"] > self.max_distance:
+            return []
+
         bm25_hits = self._bm25_search(query, pool)
         candidates = self._fuse([vector_hits, bm25_hits], pool_size=max(15, self.top_k * 3))
         if not candidates:
@@ -121,7 +150,13 @@ class RagChain:
             c["rerank_score"] = float(score)
         candidates.sort(key=lambda c: c["rerank_score"], reverse=True)
 
-        return candidates[: self.top_k]
+        # Drop chunks that trail far behind the best match instead of blindly padding to
+        # top_k. Relative to the top score (not an absolute floor) because the cross-encoder's
+        # score scale shifts a lot with query phrasing -- a vague query scores everything low,
+        # even the correct chunk, so an absolute cutoff would wrongly discard it.
+        best_score = candidates[0]["rerank_score"]
+        relevant = [c for c in candidates if c["rerank_score"] >= best_score - RERANK_MARGIN]
+        return relevant[: self.top_k]
 
     @staticmethod
     def label(chunk: dict) -> str:
@@ -155,7 +190,9 @@ class RagChain:
             messages.append({"role": h["role"], "content": h["content"]})
         messages.append({"role": "user", "content": self.build_prompt(query, chunks)})
 
-        response = self.groq.chat.completions.create(model=self.groq_model, messages=messages)
+        response = self.groq.chat.completions.create(
+            model=self.groq_model, messages=messages, temperature=GENERATION_TEMPERATURE
+        )
         return response.choices[0].message.content
 
     def ask(self, query: str, history: list[dict] | None = None) -> str:
@@ -163,7 +200,9 @@ class RagChain:
         standalone_query = self.condense_question(query, history)
         chunks = self.retrieve(standalone_query)
         if not chunks:
-            return "No relevant documents found. Have you run ingest.py?"
+            if self.collection.count() == 0:
+                return "No documents ingested yet. Run ingest.py first."
+            return "I don't have information on that in the ingested documents."
         return self.generate(query, chunks, history)
 
 
