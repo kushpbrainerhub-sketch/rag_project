@@ -14,14 +14,22 @@ DATA_DIR = Path("data")
 
 def _default_chroma_dir() -> str:
     """Prefer a local ./chroma_db (persists across runs), but fall back to the OS temp
-    directory if that's not writable -- e.g. Streamlit Community Cloud mounts the repo
-    read-only, so a committed chroma_db/ can't be written to at runtime."""
+    directory if that's not writable. On Streamlit Community Cloud the repo is baked into
+    a read-only image layer: creating a brand-new file in chroma_db/ can still succeed (it
+    lands on the writable overlay), but writing to a chroma.sqlite3 that was already
+    committed to git fails -- so this must probe the existing file itself, not just the
+    directory, or it wrongly concludes the directory is writable."""
     preferred = Path("chroma_db")
+    sqlite_file = preferred / "chroma.sqlite3"
     try:
-        preferred.mkdir(exist_ok=True)
-        probe = preferred / ".write_test"
-        probe.write_text("ok")
-        probe.unlink()
+        if sqlite_file.exists():
+            with open(sqlite_file, "r+b"):
+                pass
+        else:
+            preferred.mkdir(exist_ok=True)
+            probe = preferred / ".write_test"
+            probe.write_text("ok")
+            probe.unlink()
         return str(preferred)
     except OSError:
         return str(Path(tempfile.gettempdir()) / "rag_project_chroma_db")
