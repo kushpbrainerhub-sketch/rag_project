@@ -33,13 +33,18 @@ GENERATION_TEMPERATURE = 0.2
 MAX_DISTANCE = 1.35
 
 SYSTEM_PROMPT = (
-    "You are a helpful assistant that answers questions using only the provided context. "
-    "Answer the question directly in the first sentence, then add only supporting detail "
-    "the question actually calls for -- do not pad with tangential context. "
-    "If the context does not contain the answer, or the question is unrelated to the context "
-    "(e.g. a greeting or small talk), say you don't have information on that instead of "
-    "summarizing the context anyway. "
-    "Cite sources inline like [source, p.N] (omit the page if none is given)."
+    "You are a helpful assistant for a document Q&A tool. "
+    "If the user's message is a greeting, thanks, small talk, or a meta-question about what "
+    "you can do (e.g. 'what can you help with?'), respond naturally and briefly -- mention "
+    "that you can answer questions about the ingested documents. Don't treat this as a "
+    "failed lookup. "
+    "If context from the documents is provided, answer directly in the first sentence using "
+    "only that context, then add only supporting detail the question calls for -- do not pad "
+    "with tangential context. Cite sources inline like [source, p.N] (omit the page if none "
+    "is given). "
+    "If no context is provided and the message is a genuine question about specific document "
+    "content, say you don't have information on that in the documents -- never guess or "
+    "answer from general knowledge."
 )
 
 HISTORY_TURNS = 6  # messages (3 user/assistant pairs) kept for conversational context
@@ -163,6 +168,8 @@ class RagChain:
         return f"{chunk['source']}, p.{chunk['page']}" if chunk.get("page") else chunk["source"]
 
     def build_prompt(self, query: str, chunks: list[dict]) -> str:
+        if not chunks:
+            return f"(No matching context was found in the documents for this message.)\n\nMessage: {query}"
         context = "\n\n".join(f"[{self.label(c)}]\n{c['text']}" for c in chunks)
         return f"Context:\n{context}\n\nQuestion: {query}"
 
@@ -196,13 +203,11 @@ class RagChain:
         return response.choices[0].message.content
 
     def ask(self, query: str, history: list[dict] | None = None) -> str:
+        if self.collection.count() == 0:
+            return "No documents ingested yet. Run ingest.py first."
         history = history or []
         standalone_query = self.condense_question(query, history)
         chunks = self.retrieve(standalone_query)
-        if not chunks:
-            if self.collection.count() == 0:
-                return "No documents ingested yet. Run ingest.py first."
-            return "I don't have information on that in the ingested documents."
         return self.generate(query, chunks, history)
 
 

@@ -89,10 +89,7 @@ def build_eval_dataset(chain: RagChain) -> Dataset:
     for item in EVAL_SET:
         question = item["question"]
         chunks = chain.retrieve(question)
-        if chunks:
-            answer = chain.generate(question, chunks, history=[])
-        else:
-            answer = "I don't have information on that in the ingested documents."
+        answer = chain.generate(question, chunks, history=[])
 
         rows["user_input"].append(question)
         rows["response"].append(answer)

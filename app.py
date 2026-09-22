@@ -94,10 +94,7 @@ if query:
             chain.top_k = top_k
             standalone_query = chain.condense_question(query, history)
             chunks = chain.retrieve(standalone_query)
-            if chunks:
-                answer = chain.generate(query, chunks, history)
-            else:
-                answer = "I don't have information on that in the ingested documents."
+            answer = chain.generate(query, chunks, history)
         st.markdown(answer)
         if chunks:
             render_sources(chunks)
