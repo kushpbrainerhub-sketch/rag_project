@@ -2,13 +2,32 @@
 
 import argparse
 import hashlib
+import os
+import tempfile
 from pathlib import Path
 
 import chromadb
 from sentence_transformers import SentenceTransformer
 
 DATA_DIR = Path("data")
-CHROMA_DIR = "chroma_db"
+
+
+def _default_chroma_dir() -> str:
+    """Prefer a local ./chroma_db (persists across runs), but fall back to the OS temp
+    directory if that's not writable -- e.g. Streamlit Community Cloud mounts the repo
+    read-only, so a committed chroma_db/ can't be written to at runtime."""
+    preferred = Path("chroma_db")
+    try:
+        preferred.mkdir(exist_ok=True)
+        probe = preferred / ".write_test"
+        probe.write_text("ok")
+        probe.unlink()
+        return str(preferred)
+    except OSError:
+        return str(Path(tempfile.gettempdir()) / "rag_project_chroma_db")
+
+
+CHROMA_DIR = os.environ.get("CHROMA_DIR", _default_chroma_dir())
 COLLECTION_NAME = "documents"
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 CHUNK_SIZE = 800
