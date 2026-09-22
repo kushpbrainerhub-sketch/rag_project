@@ -90,17 +90,20 @@ class RagChain:
         embedding = self.embedder.encode([query]).tolist()
         results = self.collection.query(query_embeddings=embedding, n_results=n)
 
-        ids = results.get("ids", [[]])[0]
-        docs = results.get("documents", [[]])[0]
-        metadatas = results.get("metadatas", [[]])[0]
-        distances = results.get("distances", [[]])[0]
+        # `dict.get(key, default)` only falls back when the key is missing -- Chroma can
+        # return these keys present but set to None (e.g. querying an empty collection), so
+        # `or` is required here, not just a .get() default, or this throws on a None value.
+        ids = (results.get("ids") or [[]])[0]
+        docs = (results.get("documents") or [[]])[0]
+        metadatas = (results.get("metadatas") or [[]])[0]
+        distances = (results.get("distances") or [[]])[0]
 
         return [
             {
                 "id": cid,
                 "text": doc,
-                "source": meta.get("source"),
-                "page": meta.get("page") or None,
+                "source": (meta or {}).get("source"),
+                "page": (meta or {}).get("page") or None,
                 "distance": dist,
             }
             for cid, doc, meta, dist in zip(ids, docs, metadatas, distances)
@@ -115,8 +118,8 @@ class RagChain:
             {
                 "id": self._bm25_ids[i],
                 "text": self._bm25_texts[i],
-                "source": self._bm25_metas[i].get("source"),
-                "page": self._bm25_metas[i].get("page") or None,
+                "source": (self._bm25_metas[i] or {}).get("source"),
+                "page": (self._bm25_metas[i] or {}).get("page") or None,
                 "distance": None,
             }
             for i in ranked[:n] if scores[i] > 0
@@ -135,6 +138,9 @@ class RagChain:
         return [by_id[i] for i in ranked_ids]
 
     def retrieve(self, query: str) -> list[dict]:
+        if self.collection.count() == 0:
+            return []
+
         pool = max(20, self.top_k * 4)
         vector_hits = self._vector_search(query, pool)
 

@@ -81,7 +81,11 @@ for msg in st.session_state.messages:
         if msg.get("sources"):
             render_sources(msg["sources"])
 
-query = st.chat_input("Ask a question about your documents...")
+count = chain.collection.count()  # re-read: an upload above may have just changed it
+query = st.chat_input(
+    "Ask a question about your documents..." if count else "Upload a document to get started",
+    disabled=count == 0,
+)
 if query:
     history = [{"role": m["role"], "content": m["content"]} for m in st.session_state.messages]
 
