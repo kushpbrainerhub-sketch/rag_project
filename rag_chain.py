@@ -4,10 +4,11 @@ import argparse
 import os
 import re
 import sys
+import time
 
 import chromadb
 from dotenv import load_dotenv
-from groq import Groq
+from groq import APIError, Groq, RateLimitError
 from rank_bm25 import BM25Okapi
 from sentence_transformers import CrossEncoder, SentenceTransformer
 
@@ -173,6 +174,24 @@ class RagChain:
         context = "\n\n".join(f"[{self.label(c)}]\n{c['text']}" for c in chunks)
         return f"Context:\n{context}\n\nQuestion: {query}"
 
+    def _complete(self, messages: list[dict], temperature: float) -> str:
+        """Call Groq's chat completions, retrying once on a rate limit before giving up.
+        Free-tier Groq keys have a low request/token quota that's easy to hit under any
+        real testing or multi-user traffic -- a bare API call here would crash the whole
+        app on that, so callers (generate/condense_question) catch RateLimitError/APIError
+        around this and degrade gracefully instead."""
+        for attempt in range(2):
+            try:
+                response = self.groq.chat.completions.create(
+                    model=self.groq_model, messages=messages, temperature=temperature
+                )
+                return response.choices[0].message.content
+            except RateLimitError:
+                if attempt == 0:
+                    time.sleep(3)
+                    continue
+                raise
+
     def condense_question(self, query: str, history: list[dict]) -> str:
         """Rewrite a follow-up question into a standalone one using chat history."""
         if not history:
@@ -184,12 +203,12 @@ class RagChain:
             "Reply with only the rewritten question, nothing else.\n\n"
             f"Conversation:\n{convo}\n\nFollow-up question: {query}\nStandalone question:"
         )
-        response = self.groq.chat.completions.create(
-            model=self.groq_model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-        )
-        return response.choices[0].message.content.strip()
+        try:
+            return self._complete([{"role": "user", "content": prompt}], temperature=0).strip()
+        except (RateLimitError, APIError):
+            # Can't condense right now -- fall back to the raw follow-up rather than
+            # failing the whole turn over what's just a quality-of-life rewrite.
+            return query
 
     def generate(self, query: str, chunks: list[dict], history: list[dict] | None = None) -> str:
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -197,10 +216,15 @@ class RagChain:
             messages.append({"role": h["role"], "content": h["content"]})
         messages.append({"role": "user", "content": self.build_prompt(query, chunks)})
 
-        response = self.groq.chat.completions.create(
-            model=self.groq_model, messages=messages, temperature=GENERATION_TEMPERATURE
-        )
-        return response.choices[0].message.content
+        try:
+            return self._complete(messages, GENERATION_TEMPERATURE)
+        except RateLimitError:
+            return (
+                "Groq's rate limit was hit (the free tier has a low request/token quota). "
+                "Please wait a minute and try again."
+            )
+        except APIError as e:
+            return f"Something went wrong calling the LLM ({type(e).__name__}). Please try again."
 
     def ask(self, query: str, history: list[dict] | None = None) -> str:
         if self.collection.count() == 0:
