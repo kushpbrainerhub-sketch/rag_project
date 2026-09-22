@@ -95,9 +95,8 @@ if query:
 
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
-            chain.top_k = top_k
             standalone_query = chain.condense_question(query, history)
-            chunks = chain.retrieve(standalone_query)
+            chunks = chain.retrieve(standalone_query, top_k=top_k)
             answer = chain.generate(query, chunks, history)
         st.markdown(answer)
         if chunks:

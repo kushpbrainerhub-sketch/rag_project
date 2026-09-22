@@ -40,6 +40,11 @@ GENERATION_TEMPERATURE = 0.2
 # this if you swap in a different embedding model or a very different document set.
 MAX_DISTANCE = 1.35
 
+# Skip the condense_question() rewrite call for short messages -- greetings, "thanks", "ok"
+# rarely reference prior turns, and against the tight per-minute token budget, doubling
+# every turn's Groq calls for messages that don't need rewriting isn't worth it.
+CONDENSE_MIN_WORDS = 4
+
 SYSTEM_PROMPT = (
     "You are a helpful assistant for a document Q&A tool. "
     "If the user's message is a greeting, thanks, small talk, or a meta-question about what "
@@ -144,11 +149,16 @@ class RagChain:
         ranked_ids = sorted(scores, key=lambda i: scores[i], reverse=True)[:pool_size]
         return [by_id[i] for i in ranked_ids]
 
-    def retrieve(self, query: str) -> list[dict]:
+    def retrieve(self, query: str, top_k: int | None = None) -> list[dict]:
+        # top_k is a per-call override, not a mutation of self.top_k -- RagChain is shared
+        # across every visitor's session behind Streamlit's @st.cache_resource, so writing
+        # to self.top_k here would leak one user's slider setting into everyone else's turns.
+        top_k = top_k or self.top_k
+
         if self.collection.count() == 0:
             return []
 
-        pool = max(20, self.top_k * 4)
+        pool = max(20, top_k * 4)
         vector_hits = self._vector_search(query, pool)
 
         # Relevance gate: if even the closest chunk is farther than max_distance, the query
@@ -159,7 +169,7 @@ class RagChain:
             return []
 
         bm25_hits = self._bm25_search(query, pool)
-        candidates = self._fuse([vector_hits, bm25_hits], pool_size=max(15, self.top_k * 3))
+        candidates = self._fuse([vector_hits, bm25_hits], pool_size=max(15, top_k * 3))
         if not candidates:
             return []
 
@@ -175,7 +185,7 @@ class RagChain:
         # even the correct chunk, so an absolute cutoff would wrongly discard it.
         best_score = candidates[0]["rerank_score"]
         relevant = [c for c in candidates if c["rerank_score"] >= best_score - RERANK_MARGIN]
-        return relevant[: self.top_k]
+        return relevant[:top_k]
 
     @staticmethod
     def label(chunk: dict) -> str:
@@ -207,7 +217,7 @@ class RagChain:
 
     def condense_question(self, query: str, history: list[dict]) -> str:
         """Rewrite a follow-up question into a standalone one using chat history."""
-        if not history:
+        if not history or len(query.split()) < CONDENSE_MIN_WORDS:
             return query
         convo = "\n".join(f"{h['role']}: {h['content']}" for h in history[-HISTORY_TURNS:])
         prompt = (
