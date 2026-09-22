@@ -53,7 +53,9 @@ def main() -> int:
             ok = False
             continue
         for c in chunks:
-            print(f"  - [{c['source']}] distance={c['distance']:.4f}")
+            print(f"  - [{chain.label(c)}] rerank_score={c['rerank_score']:.3f}")
+
+        ok &= check("BM25 index built", chain.bm25 is not None, "collection may be empty")
 
         try:
             answer = chain.ask(query)

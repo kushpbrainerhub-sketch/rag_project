@@ -4,3 +4,9 @@ sentence-transformers
 pypdf
 python-dotenv
 groq
+rank-bm25
+ragas
+datasets
+langchain-core
+langchain-groq
+langchain-community

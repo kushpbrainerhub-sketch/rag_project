@@ -15,16 +15,22 @@ CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
 
 
-def read_text(path: Path) -> str:
+def extract_pages(path: Path) -> list[tuple[int, str]]:
+    """Return (page_number, text) pairs. Non-paginated files use page 0."""
     if path.suffix.lower() == ".pdf":
         try:
             from pypdf import PdfReader
         except ImportError:
             print(f"Skipping {path.name}: install pypdf to ingest PDFs (pip install pypdf)")
-            return ""
+            return []
         reader = PdfReader(str(path))
-        return "\n".join(page.extract_text() or "" for page in reader.pages)
-    return path.read_text(encoding="utf-8", errors="ignore")
+        return [(i + 1, page.extract_text() or "") for i, page in enumerate(reader.pages)]
+    return [(0, path.read_text(encoding="utf-8", errors="ignore"))]
+
+
+def load_file(path: Path, source: str) -> list[tuple[str, int, str]]:
+    """Return (source, page, text) triples for one file, skipping empty pages."""
+    return [(source, page, text) for page, text in extract_pages(path) if text.strip()]
 
 
 def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
@@ -40,15 +46,31 @@ def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVE
     return [c for c in chunks if c]
 
 
-def load_documents(data_dir: Path) -> list[tuple[str, str]]:
+def load_documents(data_dir: Path) -> list[tuple[str, int, str]]:
     supported = {".txt", ".md", ".pdf"}
     docs = []
     for path in sorted(data_dir.rglob("*")):
         if path.is_file() and path.suffix.lower() in supported:
-            text = read_text(path)
-            if text.strip():
-                docs.append((str(path.relative_to(data_dir)), text))
+            docs.extend(load_file(path, str(path.relative_to(data_dir))))
     return docs
+
+
+def ingest_documents(documents: list[tuple[str, int, str]], model: SentenceTransformer, collection, show_progress: bool = False) -> int:
+    """Chunk, embed, and upsert (source, page, text) triples into a Chroma collection. Returns chunk count."""
+    ids, chunks, metadatas = [], [], []
+    for source, page, text in documents:
+        for i, chunk in enumerate(chunk_text(text)):
+            chunk_id = hashlib.sha256(f"{source}:{page}:{i}".encode()).hexdigest()
+            ids.append(chunk_id)
+            chunks.append(chunk)
+            metadatas.append({"source": source, "page": page, "chunk": i})
+
+    if not chunks:
+        return 0
+
+    embeddings = model.encode(chunks, show_progress_bar=show_progress).tolist()
+    collection.upsert(ids=ids, embeddings=embeddings, documents=chunks, metadatas=metadatas)
+    return len(chunks)
 
 
 def main():
@@ -73,23 +95,14 @@ def main():
         client.delete_collection(COLLECTION_NAME) if COLLECTION_NAME in [c.name for c in client.list_collections()] else None
     collection = client.get_or_create_collection(COLLECTION_NAME)
 
-    ids, chunks, metadatas = [], [], []
-    for source, text in documents:
-        for i, chunk in enumerate(chunk_text(text)):
-            chunk_id = hashlib.sha256(f"{source}:{i}".encode()).hexdigest()
-            ids.append(chunk_id)
-            chunks.append(chunk)
-            metadatas.append({"source": source, "chunk": i})
-
-    if not chunks:
+    n_sources = len({source for source, _, _ in documents})
+    print(f"Embedding chunks from {len(documents)} page(s)/section(s) across {n_sources} file(s)...")
+    n = ingest_documents(documents, model, collection, show_progress=True)
+    if n == 0:
         print("No chunks produced from documents.")
         return
 
-    print(f"Embedding {len(chunks)} chunks from {len(documents)} document(s)...")
-    embeddings = model.encode(chunks, show_progress_bar=True).tolist()
-
-    collection.upsert(ids=ids, embeddings=embeddings, documents=chunks, metadatas=metadatas)
-    print(f"Ingested {len(chunks)} chunks into collection '{COLLECTION_NAME}' at {CHROMA_DIR}/")
+    print(f"Ingested {n} chunks into collection '{COLLECTION_NAME}' at {CHROMA_DIR}/")
 
 
 if __name__ == "__main__":
