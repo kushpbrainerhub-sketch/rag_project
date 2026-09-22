@@ -17,7 +17,14 @@ from ingest import CHROMA_DIR, COLLECTION_NAME, EMBEDDING_MODEL
 sys.stdout.reconfigure(encoding="utf-8")
 load_dotenv()
 
-GROQ_MODEL = "openai/gpt-oss-120b"
+# Groq's free-tier accounts get a fixed ~8000 tokens/minute budget regardless of model.
+# openai/gpt-oss-* are reasoning models that burn hidden "reasoning tokens" on every call
+# (confirmed empirically: ~12-23 reasoning tokens even on a trivial "say OK" prompt) on top
+# of the visible answer -- against an 8k/min ceiling, condense_question() + generate() (2
+# calls/turn) blew through the budget after just 1-2 real questions. qwen/qwen3.8-27b has
+# no reasoning overhead and used ~5x fewer tokens for the same prompts in testing, with
+# comparable answer quality on this project's RAG questions.
+GROQ_MODEL = "qwen/qwen3.8-27b"
 RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 TOP_K = 4
 RRF_K = 60  # reciprocal rank fusion constant
