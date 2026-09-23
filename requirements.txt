@@ -1,7 +1,7 @@
 streamlit
 chromadb
 sentence-transformers
-pypdf
+pymupdf
 python-dotenv
 groq
 rank-bm25
