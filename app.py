@@ -4,7 +4,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from ingest import CHROMA_DIR, DATA_DIR, ingest_documents, load_file
+from ingest import CHROMA_DIR, DATA_DIR, ingest_documents, load_documents, load_file
 from rag_chain import RagChain
 
 st.set_page_config(page_title="RAG Chat", page_icon="assets/favicon.png", layout="centered")
@@ -29,6 +29,15 @@ except Exception as e:
     st.stop()
 
 count = chain.collection.count()
+if count == 0:
+    # chroma_db/ isn't committed, so a fresh clone/deploy starts empty -- build the
+    # index from whatever is in data/ (a no-op on later runs once it's persisted).
+    documents = load_documents(Path(DATA_DIR)) if Path(DATA_DIR).is_dir() else []
+    if documents:
+        with st.spinner(f"Building index from {DATA_DIR}/ (first run only)..."):
+            ingest_documents(documents, chain.embedder, chain.collection)
+            chain.refresh_index()
+        count = chain.collection.count()
 if count == 0:
     st.warning(f"No documents in '{CHROMA_DIR}/'. Add files to data/ and run `python ingest.py` first.")
 
